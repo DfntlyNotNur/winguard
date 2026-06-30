@@ -78,7 +78,7 @@ def save_baseline(snapshot: dict) -> str:
     Returns a status message string.
     """
     baseline_data = {
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         "snapshot": snapshot
     }
 
@@ -145,7 +145,7 @@ def compare_snapshots(baseline: dict, current: dict, advance_reference: bool = T
     every polling interval while still allowing later changes to be detected.
     """
     changes = []
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
     # Build a severity lookup from config
     severity_lookup = {

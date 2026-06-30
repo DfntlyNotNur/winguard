@@ -57,7 +57,7 @@ MONITORED_REGISTRY_KEYS = [
         winreg.HKEY_CURRENT_USER,
         "HKCU",
         r"Software\WinGuardTest",
-        "LOW"
+        "TESTING"
     ),
 ]
 
