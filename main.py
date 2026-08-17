@@ -24,6 +24,7 @@ from registry_monitor import (
     compare_snapshots
 )
 from logger import write_log, write_info_log
+from file_tab import FileIntegrityTab
 
 
 # ==============================================================================
@@ -244,7 +245,7 @@ class DashboardTab(QWidget):
         layout.addLayout(summary_grid)
 
         self.lbl_registry_status = self._create_value_label("Stopped")
-        self.lbl_fim_status = self._create_value_label("-- --")
+        self.lbl_fim_status = self._create_value_label("Stopped")
         self.lbl_total_changes = self._create_value_label("0")
         self.lbl_last_scan = self._create_value_label("Not scanned yet")
 
@@ -299,6 +300,35 @@ class DashboardTab(QWidget):
             scan_time, changes = args
             self.lbl_last_scan.setText(scan_time)
             self.record_registry_changes(changes)
+
+    def handle_fim_event(self, event_type: str, *args):
+        if event_type == "status":
+            self.lbl_fim_status.setText(args[0])
+            return
+
+        if event_type == "scan":
+            scan_time, changes = args
+            self.record_fim_changes(changes)
+
+    def record_fim_changes(self, changes: list[dict]):
+        if not changes:
+            return
+
+        self.total_changes += len(changes)
+        for change in changes:
+            change_type = change.get("change_type", "UNKNOWN")
+            severity = change.get("severity", "UNKNOWN")
+            self.change_type_counts[change_type] = self.change_type_counts.get(change_type, 0) + 1
+            self.severity_counts[severity] = self.severity_counts.get(severity, 0) + 1
+
+        latest = changes[-1]
+        self.lbl_latest_alert.setText(
+            "Latest alert: "
+            f"{latest.get('severity', 'UNKNOWN')} - "
+            f"{latest.get('change_type', 'UNKNOWN')} file "
+            f"({latest.get('file_path', '')})"
+        )
+        self._refresh_summary_counts()
 
     def record_registry_changes(self, changes: list[dict]):
         if not changes:
@@ -442,11 +472,12 @@ class WinGuardMainWindow(QMainWindow):
         )
         self.tabs.addTab(self.registry_tab, "Registry Monitor")
 
-        # Tab 3: File Integrity Monitor (placeholder)
-        fim_placeholder = QLabel("File Integrity Monitoring. Coming Soon")
-        fim_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        fim_placeholder.setStyleSheet("font-size: 14px; color: gray;")
-        self.tabs.addTab(fim_placeholder, "File Integrity Monitor")
+        # Tab 3: File Integrity Monitor
+        self.fim_tab = FileIntegrityTab(
+            status_callback=self.update_status,
+            dashboard_callback=self.dashboard_tab.handle_fim_event
+        )
+        self.tabs.addTab(self.fim_tab, "File Integrity Monitor")
 
     def update_status(self, message: str):
         self.status_bar.showMessage(message)
