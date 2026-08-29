@@ -2,11 +2,26 @@
 # WinGuard - Windows Registry Monitor Module
 # Handles snapshot, baseline save/load, and change detection (diff).
 
-import winreg
 import json
 import os
 from datetime import datetime
-from config import MONITORED_REGISTRY_KEYS, BASELINE_FILE_REGISTRY
+from pathlib import Path
+
+import winreg
+
+from config import (
+    BASELINE_FILE_REGISTRY,
+    DATE_FORMAT,
+    LEGACY_BASELINE_FILE_REGISTRY,
+    MONITORED_REGISTRY_KEYS,
+    ensure_data_directory,
+)
+
+NO_MORE_VALUES_ERROR = 259
+SEVERITY_LOOKUP = {
+    f"{hive_name}\\{subkey}": severity
+    for _, hive_name, subkey, severity in MONITORED_REGISTRY_KEYS
+}
 
 
 # ==============================================================================
@@ -33,22 +48,24 @@ def take_registry_snapshot() -> dict:
         snapshot[full_key_path] = {}
 
         try:
-            reg_key = winreg.OpenKey(hive_const, subkey, 0, winreg.KEY_READ)
-            index = 0
-
-            while True:
-                try:
-                    value_name, value_data, value_type = winreg.EnumValue(reg_key, index)
-                    snapshot[full_key_path][value_name] = {
-                        "data": str(value_data),
-                        "type": value_type
-                    }
-                    index += 1
-                except OSError:
-                    # No more values to enumerate
-                    break
-
-            winreg.CloseKey(reg_key)
+            with winreg.OpenKey(hive_const, subkey, 0, winreg.KEY_READ) as reg_key:
+                index = 0
+                while True:
+                    try:
+                        value_name, value_data, value_type = winreg.EnumValue(reg_key, index)
+                        snapshot[full_key_path][value_name] = {
+                            "data": str(value_data),
+                            "type": value_type,
+                        }
+                        index += 1
+                    except OSError as error:
+                        if getattr(error, "winerror", None) == NO_MORE_VALUES_ERROR:
+                            break
+                        snapshot[full_key_path]["__error__"] = {
+                            "data": f"OS Error: {error}",
+                            "type": -1,
+                        }
+                        break
 
         except PermissionError:
             # Access denied (common for HKLM keys without admin rights)
@@ -78,13 +95,12 @@ def save_baseline(snapshot: dict) -> str:
     Returns a status message string.
     """
     baseline_data = {
-        "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "created_at": datetime.now().strftime(DATE_FORMAT),
         "snapshot": snapshot
     }
 
     try:
-        with open(BASELINE_FILE_REGISTRY, "w") as f:
-            json.dump(baseline_data, f, indent=4)
+        _write_json_atomic(BASELINE_FILE_REGISTRY, baseline_data)
         return f"Baseline saved at {baseline_data['created_at']}"
     except OSError as e:
         return f"Failed to save baseline: {str(e)}"
@@ -95,11 +111,12 @@ def load_baseline() -> dict | None:
     Loads the saved baseline JSON file.
     Returns the snapshot dict, or None if no baseline file exists.
     """
-    if not os.path.exists(BASELINE_FILE_REGISTRY):
+    baseline_file = _baseline_file()
+    if not baseline_file.exists():
         return None
 
     try:
-        with open(BASELINE_FILE_REGISTRY, "r") as f:
+        with baseline_file.open("r", encoding="utf-8") as f:
             baseline_data = json.load(f)
         return baseline_data.get("snapshot", {})
     except (json.JSONDecodeError, OSError):
@@ -111,10 +128,11 @@ def get_baseline_timestamp() -> str | None:
     Returns the timestamp string from the saved baseline file,
     or None if no baseline exists.
     """
-    if not os.path.exists(BASELINE_FILE_REGISTRY):
+    baseline_file = _baseline_file()
+    if not baseline_file.exists():
         return None
     try:
-        with open(BASELINE_FILE_REGISTRY, "r") as f:
+        with baseline_file.open("r", encoding="utf-8") as f:
             baseline_data = json.load(f)
         return baseline_data.get("created_at", None)
     except (json.JSONDecodeError, OSError):
@@ -147,21 +165,15 @@ def compare_snapshots(baseline: dict, current: dict, advance_reference: bool = T
     changes = []
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
-    # Build a severity lookup from config
-    severity_lookup = {
-        f"{hive_name}\\{subkey}": severity
-        for _, hive_name, subkey, severity in MONITORED_REGISTRY_KEYS
-    }
-
     all_keys = set(baseline.keys()) | set(current.keys())
 
-    for key_path in all_keys:
-        severity = severity_lookup.get(key_path, "MEDIUM")
+    for key_path in sorted(all_keys):
+        severity = SEVERITY_LOOKUP.get(key_path, "MEDIUM")
 
         baseline_values = baseline.get(key_path, {})
         current_values  = current.get(key_path, {})
 
-        all_value_names = set(baseline_values.keys()) | set(current_values.keys())
+        all_value_names = sorted(set(baseline_values.keys()) | set(current_values.keys()))
 
         for value_name in all_value_names:
             # Skip internal error markers
@@ -213,3 +225,21 @@ def compare_snapshots(baseline: dict, current: dict, advance_reference: bool = T
         baseline.update(current)
 
     return changes
+
+
+def _baseline_file() -> Path:
+    return BASELINE_FILE_REGISTRY if BASELINE_FILE_REGISTRY.exists() else LEGACY_BASELINE_FILE_REGISTRY
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    ensure_data_directory()
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass

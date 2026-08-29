@@ -1,10 +1,50 @@
 # logger.py
 # WinGuard - Logging Module
-# Handles writing detected changes and events to a log file.
+# Handles writing detected changes and events to a rotating log file.
 
+import logging
 import os
+import shutil
 from datetime import datetime
-from config import LOG_FILE
+from logging.handlers import RotatingFileHandler
+
+from config import (
+    DATE_FORMAT,
+    LEGACY_LOG_FILE,
+    LOG_BACKUP_COUNT,
+    LOG_FILE,
+    LOG_MAX_BYTES,
+    ensure_data_directory,
+)
+
+LOGGER_NAME = "winguard"
+_logger = logging.getLogger(LOGGER_NAME)
+_logger.setLevel(logging.INFO)
+_logger.propagate = False
+_handler = None
+
+
+def _get_logger() -> logging.Logger | None:
+    global _handler
+    if _handler is not None:
+        return _logger
+
+    try:
+        ensure_data_directory()
+        if not LOG_FILE.exists() and LEGACY_LOG_FILE.exists():
+            shutil.copy2(LEGACY_LOG_FILE, LOG_FILE)
+        _handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+            delay=True,
+        )
+        _handler.setFormatter(logging.Formatter("%(message)s"))
+        _logger.addHandler(_handler)
+        return _logger
+    except OSError:
+        return None
 
 
 def write_log(entry: dict) -> None:
@@ -21,20 +61,35 @@ def write_log(entry: dict) -> None:
             "severity":    str
         }
     """
-    try:
-        with open(LOG_FILE, "a") as f:
-            line = (
-                f"[{entry['timestamp']}] "
-                f"[{entry['severity']}] "
-                f"[{entry['change_type']}] "
-                f"Key: {entry['key_path']} | "
-                f"Value: {entry['value_name']} | "
-                f"Old: {entry['old_data']} | "
-                f"New: {entry['new_data']}\n"
-            )
-            f.write(line)
-    except OSError:
-        pass  # Silently fail — UI status bar handles user feedback
+    logger = _get_logger()
+    if logger is None:
+        return
+    line = (
+        f"[{entry['timestamp']}] "
+        f"[{entry['severity']}] "
+        f"[{entry['change_type']}] "
+        f"Key: {entry['key_path']} | "
+        f"Value: {entry['value_name']} | "
+        f"Old: {entry['old_data']} | "
+        f"New: {entry['new_data']}"
+    )
+    logger.info(line)
+
+
+def write_fim_log(entry: dict) -> None:
+    """Write a file-integrity event using the shared rotating log."""
+    logger = _get_logger()
+    if logger is None:
+        return
+    line = (
+        f"[{entry['timestamp']}] "
+        f"[{entry.get('severity', 'INFO')}] "
+        f"[{entry['change_type']}] "
+        f"File: {entry['file_path']} | {entry['details']} | "
+        f"Old SHA-256: {entry.get('old_hash', '')} | "
+        f"New SHA-256: {entry.get('new_hash', '')}"
+    )
+    logger.info(line)
 
 
 def write_info_log(message: str) -> None:
@@ -42,12 +97,10 @@ def write_info_log(message: str) -> None:
     Writes a general informational message to the log file.
     Used for system events like baseline creation, monitoring start/stop.
     """
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        with open(LOG_FILE, "a") as f:
-            f.write(f"[{timestamp}] [INFO] {message}\n")
-    except OSError:
-        pass
+    logger = _get_logger()
+    if logger is not None:
+        timestamp = datetime.now().strftime(DATE_FORMAT)
+        logger.info(f"[{timestamp}] [INFO] {message}")
 
 
 def log_exists() -> bool:
@@ -57,8 +110,13 @@ def log_exists() -> bool:
 
 def clear_log() -> None:
     """Clears the log file."""
+    global _handler
+    if _handler is not None:
+        _logger.removeHandler(_handler)
+        _handler.close()
+        _handler = None
     try:
-        with open(LOG_FILE, "w") as f:
-            f.write("")
+        ensure_data_directory()
+        LOG_FILE.write_text("", encoding="utf-8")
     except OSError:
         pass

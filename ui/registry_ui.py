@@ -7,8 +7,9 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from config import POLLING_INTERVAL_MS, SEVERITY_COLORS
-from logger import write_info_log, write_log
+from config import MAX_VISIBLE_ROWS, POLLING_INTERVAL_MS, SEVERITY_COLORS
+from ui.dashboard_ui import show_no_baselines_warning
+from logger import clear_log as clear_persisted_log, write_info_log, write_log
 from registry_monitor import (
     compare_snapshots, get_baseline_timestamp, load_baseline,
     save_baseline, take_registry_snapshot,
@@ -28,7 +29,9 @@ class RegistryTab(QWidget):
 
         buttons = QHBoxLayout()
         self.btn_baseline = QPushButton("Create Baseline")
+        self.btn_baseline.setObjectName("secondaryButton")
         self.btn_start = QPushButton("Start Monitoring")
+        self.btn_start.setObjectName("primaryButton")
         self.btn_stop = QPushButton("Stop Monitoring")
         self.btn_clear = QPushButton("Clear Log")
         self.btn_stop.setEnabled(False)
@@ -53,26 +56,32 @@ class RegistryTab(QWidget):
         self.timer = QTimer(self)
         self.timer.setInterval(POLLING_INTERVAL_MS)
         self.timer.timeout.connect(self.run_scan)
-        self.btn_baseline.clicked.connect(self.create_baseline)
-        self.btn_start.clicked.connect(self.start_monitoring)
+        self.btn_baseline.clicked.connect(lambda: self.create_baseline())
+        self.btn_start.clicked.connect(lambda: self.start_monitoring())
         self.btn_stop.clicked.connect(self.stop_monitoring)
         self.btn_clear.clicked.connect(self.clear_table)
         self._refresh_baseline_label()
 
-    def create_baseline(self):
+    def create_baseline(self, notify=True):
         self.status_callback("Creating registry baseline...")
         self.baseline_snapshot = take_registry_snapshot()
         message = save_baseline(self.baseline_snapshot)
         self._refresh_baseline_label()
         write_info_log("Registry baseline created.")
         self.status_callback("Registry baseline ready.")
-        QMessageBox.information(self, "Baseline Created", message)
+        if notify:
+            QMessageBox.information(self, "Baseline Created", message)
 
-    def start_monitoring(self):
+    def can_start_monitoring(self):
+        self.baseline_snapshot = self.baseline_snapshot or load_baseline()
+        return self.baseline_snapshot is not None
+
+    def start_monitoring(self, notify=True):
         self.baseline_snapshot = self.baseline_snapshot or load_baseline()
         if self.baseline_snapshot is None:
-            QMessageBox.warning(self, "No Baseline", "Create a baseline before starting monitoring.")
-            return
+            if notify:
+                show_no_baselines_warning(self)
+            return False
         self.timer.start()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -80,13 +89,16 @@ class RegistryTab(QWidget):
         write_info_log("Registry monitoring started.")
         self.status_callback("Registry monitoring active...")
         self._send_dashboard("status", "Active")
+        return True
 
     def stop_monitoring(self):
+        was_active = self.timer.isActive()
         self.timer.stop()
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.btn_baseline.setEnabled(True)
-        write_info_log("Registry monitoring stopped.")
+        if was_active:
+            write_info_log("Registry monitoring stopped.")
         self.status_callback("Registry monitoring stopped.")
         self._send_dashboard("status", "Stopped")
 
@@ -103,9 +115,12 @@ class RegistryTab(QWidget):
 
     def clear_table(self):
         self.table.setRowCount(0)
+        clear_persisted_log()
         self.status_callback("Registry change log cleared.")
 
     def _add_change_row(self, change):
+        if self.table.rowCount() >= MAX_VISIBLE_ROWS:
+            self.table.removeRow(0)
         row = self.table.rowCount()
         self.table.insertRow(row)
         if change["change_type"] == "ADDED":
@@ -120,6 +135,10 @@ class RegistryTab(QWidget):
         for column, value in enumerate(values):
             item = QTableWidgetItem(str(value))
             item.setBackground(color)
+            font = item.font()
+            font.setBold(False)
+            item.setFont(font)
+            item.setToolTip(str(value))
             self.table.setItem(row, column, item)
         self.table.scrollToBottom()
 
@@ -127,10 +146,11 @@ class RegistryTab(QWidget):
         timestamp = get_baseline_timestamp()
         if timestamp:
             self.lbl_baseline_info.setText(f"Baseline created: {timestamp}")
-            self.lbl_baseline_info.setStyleSheet("color: green; font-size: 12px;")
+            self.lbl_baseline_info.setObjectName("baselineLabel")
         else:
             self.lbl_baseline_info.setText("Baseline: Not created yet.")
-            self.lbl_baseline_info.setStyleSheet("color: gray; font-size: 12px;")
+            self.lbl_baseline_info.setObjectName("secondaryLabel")
+        self._send_dashboard("baseline", timestamp)
 
     def _send_dashboard(self, event_type, *args):
         if self.dashboard_callback:
