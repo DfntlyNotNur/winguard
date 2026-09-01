@@ -61,12 +61,23 @@ QPushButton#themeButton {
     padding: 2px;
     border-radius: 17px;
 }
+QToolButton#overflowButton {
+    background-color: #3b4046;
+    color: #f2f4f5;
+    border: 1px solid #626b75;
+    border-radius: 4px;
+    padding: 6px 10px;
+    min-width: 26px;
+}
+QToolButton#overflowButton:hover {
+    background-color: #48545f;
+}
 QLabel#secondaryLabel {
     color: #aeb5bc;
     font-size: 12px;
 }
 QLabel#baselineLabel {
-    color: #7bd49c;
+    color: #4ade80;
     font-size: 12px;
 }
 QLabel#warningLabel {
@@ -80,6 +91,10 @@ QTableWidget {
     gridline-color: #4b5158;
     selection-background-color: #355d83;
     selection-color: #ffffff;
+}
+QTableWidget::item:selected, QTableView::item:selected {
+    background-color: #2d78b8;
+    color: #ffffff;
 }
 QTabWidget::pane {
     border: 1px solid #4b5c6b;
@@ -207,6 +222,17 @@ QPushButton#themeButton {
     padding: 2px;
     border-radius: 17px;
 }
+QToolButton#overflowButton {
+    background-color: #eff3f7;
+    color: #253247;
+    border: 1px solid #8290a1;
+    border-radius: 4px;
+    padding: 6px 10px;
+    min-width: 26px;
+}
+QToolButton#overflowButton:hover {
+    background-color: #e0ebf5;
+}
 QLabel#secondaryLabel {
     color: #536174;
     font-size: 12px;
@@ -226,6 +252,10 @@ QTableWidget {
     gridline-color: #d5dce5;
     selection-background-color: #cfe2f7;
     selection-color: #253247;
+}
+QTableWidget::item:selected, QTableView::item:selected {
+    background-color: #2f6fbd;
+    color: #ffffff;
 }
 QTabWidget::pane {
     border: 1px solid #aebfd1;

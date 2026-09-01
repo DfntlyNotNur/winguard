@@ -20,16 +20,33 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from config import FIM_FULL_REHASH_INTERVAL_SCANS, MAX_VISIBLE_ROWS, POLLING_INTERVAL_MS
-from ui.dashboard_ui import show_no_baselines_warning
+from config import (
+    BASELINE_MISSING,
+    BASELINE_OUTDATED,
+    BASELINE_READY,
+    FIM_FULL_REHASH_INTERVAL_SCANS,
+    FIM_FOLDER_ADDED_MESSAGE,
+    FIM_FOLDER_REMOVED_MESSAGE,
+    FIM_MONITORING_PAUSED_MESSAGE,
+    MAX_VISIBLE_ROWS,
+    POLLING_INTERVAL_MS,
+)
+from ui.dashboard_ui import (
+    DeselectableTable,
+    confirm_clear_log,
+    refresh_widget_style,
+    show_no_baselines_warning,
+)
 from fim_monitor import (
     compare_file_snapshots, display_directory, get_fim_baseline_timestamp,
     load_fim_directories, load_fim_state, normalize_directory, persist_reference,
@@ -51,16 +68,6 @@ class FimScanWorker(QObject):
             self.finished.emit(generation, snapshot)
         except Exception as error:  # Surface scan failures without killing the worker.
             self.failed.emit(generation, str(error))
-
-
-class DirectoryTable(QTableWidget):
-    """Keep a selected folder highlighted until another folder or empty space is clicked."""
-
-    def mousePressEvent(self, event):
-        if self.itemAt(event.position().toPoint()) is None:
-            self.clearSelection()
-            self.setCurrentItem(None)
-        super().mousePressEvent(event)
 
 
 class FileIntegrityTab(QWidget):
@@ -109,14 +116,31 @@ class FileIntegrityTab(QWidget):
         self.btn_stop = QPushButton("Stop Monitoring")
         self.btn_add = QPushButton("Add Folder")
         self.btn_remove = QPushButton("Remove Selected")
-        self.btn_clear = QPushButton("Clear Log")
+        self.btn_clear_alerts = QPushButton("Clear Alerts")
+        self.btn_more = QToolButton()
+        self.btn_more.setObjectName("overflowButton")
+        self.btn_more.setText("...")
+        self.btn_more.setToolTip("More actions")
+        self.btn_more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self)
+        clear_log_action = menu.addAction("Clear Log")
+        clear_log_action.triggered.connect(self.clear_log)
+        self.btn_more.setMenu(menu)
         self.btn_stop.setEnabled(False)
-        for button in (self.btn_baseline, self.btn_start, self.btn_stop, self.btn_add, self.btn_remove, self.btn_clear):
+        for button in (
+            self.btn_baseline,
+            self.btn_start,
+            self.btn_stop,
+            self.btn_add,
+            self.btn_remove,
+            self.btn_clear_alerts,
+            self.btn_more,
+        ):
             controls.addWidget(button)
         layout.addLayout(controls)
 
         layout.addWidget(QLabel("Monitored Directories"))
-        self.directory_table = DirectoryTable(0, 4)
+        self.directory_table = DeselectableTable(0, 4)
         self.directory_table.setHorizontalHeaderLabels(["Directory Path", "Status", "Baseline Files", "Current Files"])
         self.directory_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.directory_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -127,7 +151,7 @@ class FileIntegrityTab(QWidget):
         layout.addWidget(self.directory_table)
 
         layout.addWidget(QLabel("Detected File Changes"))
-        self.change_table = QTableWidget(0, 5)
+        self.change_table = DeselectableTable(0, 5)
         self.change_table.setHorizontalHeaderLabels(["Timestamp", "Change Type", "File Path", "Details", "SHA-256"])
         for column in (0, 1):
             self.change_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
@@ -150,7 +174,7 @@ class FileIntegrityTab(QWidget):
         self.btn_stop.clicked.connect(self.stop_monitoring)
         self.btn_add.clicked.connect(self.add_folder)
         self.btn_remove.clicked.connect(self.remove_selected)
-        self.btn_clear.clicked.connect(self.clear_log)
+        self.btn_clear_alerts.clicked.connect(self.clear_alerts)
         self.baseline_effect = QGraphicsOpacityEffect(self.btn_baseline)
         self.baseline_effect.setOpacity(1.0)
         self.btn_baseline.setGraphicsEffect(self.baseline_effect)
@@ -189,28 +213,27 @@ class FileIntegrityTab(QWidget):
             QMessageBox.information(self, "FIM Baseline Created", message)
 
     def can_start_monitoring(self):
-        self.state = self.state or load_fim_state()
-        if not self.state or self.baseline_invalid:
-            return False
-        saved = {normalize_directory(item) for item in self.state.get("directories", [])}
-        current = {normalize_directory(item) for item in self.directories}
-        return saved == current
+        return self.get_monitoring_readiness() == BASELINE_READY
 
-    def start_monitoring(self, notify=True):
+    def get_monitoring_readiness(self):
         self.state = self.state or load_fim_state()
         if not self.state:
+            return BASELINE_MISSING
+        saved = {normalize_directory(item) for item in self.state.get("directories", [])}
+        current = {normalize_directory(item) for item in self.directories}
+        if self.baseline_invalid or saved != current:
+            return BASELINE_OUTDATED
+        return BASELINE_READY
+
+    def start_monitoring(self, notify=True):
+        readiness = self.get_monitoring_readiness()
+        if readiness == BASELINE_MISSING:
             if notify:
                 show_no_baselines_warning(self)
             return False
-        if self.baseline_invalid:
+        if readiness == BASELINE_OUTDATED:
             if notify:
                 QMessageBox.warning(self, "Baseline Outdated", "Create a new FIM baseline before starting monitoring.")
-            return False
-        saved = {normalize_directory(item) for item in self.state.get("directories", [])}
-        current = {normalize_directory(item) for item in self.directories}
-        if saved != current:
-            if notify:
-                QMessageBox.warning(self, "Baseline Outdated", "The monitored folders changed. Create a new baseline before monitoring.")
             return False
         self.pending_changes.clear()
         self._scan_count = 0
@@ -344,29 +367,48 @@ class FileIntegrityTab(QWidget):
     def add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder to Monitor")
         if folder and normalize_directory(folder) not in {normalize_directory(item) for item in self.directories}:
+            was_active = self.timer.isActive() or self._scan_busy
+            if was_active:
+                self.stop_monitoring()
             self.directories.append(folder)
             save_fim_directories(self.directories)
             self.baseline_invalid = True
             self._start_baseline_alert()
             self._refresh_baseline_label()
             self._refresh_directory_table()
-            self.status_callback("Folder added. Create a new FIM baseline before monitoring.")
+            self.status_callback(
+                FIM_MONITORING_PAUSED_MESSAGE
+                if was_active
+                else FIM_FOLDER_ADDED_MESSAGE
+            )
 
     def remove_selected(self):
         row = self.directory_table.currentRow()
         if 0 <= row < len(self.directories):
+            was_active = self.timer.isActive() or self._scan_busy
+            if was_active:
+                self.stop_monitoring()
             self.directories.pop(row)
             save_fim_directories(self.directories)
             self.baseline_invalid = True
             self._start_baseline_alert()
             self._refresh_baseline_label()
             self._refresh_directory_table()
-            self.status_callback("Folder removed. Create a new FIM baseline before monitoring.")
+            self.status_callback(
+                FIM_MONITORING_PAUSED_MESSAGE
+                if was_active
+                else FIM_FOLDER_REMOVED_MESSAGE
+            )
+
+    def clear_alerts(self):
+        self.change_table.setRowCount(0)
+        self.status_callback("FIM alerts cleared.")
 
     def clear_log(self):
-        self.change_table.setRowCount(0)
+        if not confirm_clear_log(self):
+            return
         clear_persisted_log()
-        self.status_callback("FIM change log cleared.")
+        self.status_callback("Saved WinGuard log cleared.")
 
     def _add_change_row(self, change):
         self._remember_original_hash(change)
@@ -383,7 +425,7 @@ class FileIntegrityTab(QWidget):
             self._short_hash(hash_value),
         ]
         colors = {
-            "ADDED": "#FFFFFF",    # Matches unknown/TESTING registry rows.
+            "ADDED": "#FFFFFF",    # event color.
             "MODIFIED": "#2196F3",
             "DELETED": "#BA68C8",
             "RENAMED": "#FFFFFF",
@@ -480,6 +522,7 @@ class FileIntegrityTab(QWidget):
         else:
             self.lbl_baseline.setText("Baseline: Not created yet.")
             self.lbl_baseline.setObjectName("secondaryLabel")
+        refresh_widget_style(self.lbl_baseline)
         self._send_dashboard("baseline", timestamp)
 
     def _refresh_directory_table(self, snapshot=None):
@@ -510,7 +553,7 @@ class FileIntegrityTab(QWidget):
                 if column == 0:
                     item.setToolTip(directory["path"])
                 elif column == 1 and directory["status"] == "Active":
-                    theme_color = "#75DDA0" if QApplication.instance().property("darkTheme") else "#16834B"
+                    theme_color = "#4ade80" if QApplication.instance().property("darkTheme") else "#16834b"
                     item.setForeground(QColor(theme_color))
                 self.directory_table.setItem(row, column, item)
             if selected_path == values[0]:

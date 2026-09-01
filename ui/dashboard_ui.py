@@ -4,7 +4,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -20,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from config import MONITORED_REGISTRY_KEYS
+from config import BASELINE_MISSING, BASELINE_OUTDATED, MONITORED_REGISTRY_KEYS
 
 
 NO_BASELINES_TITLE = "No Baselines"
@@ -31,6 +33,80 @@ def show_no_baselines_warning(parent: QWidget) -> None:
     """Show the standard warning used when monitoring has no usable baseline."""
 
     QMessageBox.warning(parent, NO_BASELINES_TITLE, NO_BASELINES_MESSAGE)
+
+
+def show_monitoring_readiness_warning(
+    parent: QWidget,
+    registry_status: str,
+    fim_status: str,
+) -> None:
+    """Explain whether monitoring needs a missing or outdated baseline."""
+
+    statuses = (registry_status, fim_status)
+    has_missing = BASELINE_MISSING in statuses
+    has_outdated = BASELINE_OUTDATED in statuses
+
+    if has_outdated and not has_missing and fim_status == BASELINE_OUTDATED:
+        QMessageBox.warning(
+            parent,
+            "Baseline Update Required",
+            "The FIM baseline is outdated. Create a new FIM baseline before starting monitoring.",
+        )
+        return
+
+    if has_missing and not has_outdated:
+        show_no_baselines_warning(parent)
+        return
+
+    QMessageBox.warning(
+        parent,
+        "Baseline Update Required",
+        "Create or update the required baselines before starting monitoring.",
+    )
+
+
+def confirm_clear_log(parent: QWidget) -> bool:
+    """Ask before permanently removing the shared saved monitoring log."""
+
+    dialog = QMessageBox(parent)
+    dialog.setIcon(QMessageBox.Icon.Warning)
+    dialog.setWindowTitle("Clear Log")
+    dialog.setText("Clear the saved WinGuard log?")
+    dialog.setInformativeText(
+        "This permanently removes saved Registry Monitor and FIM log history."
+    )
+    dialog.setStandardButtons(
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+    dialog.setDefaultButton(QMessageBox.StandardButton.No)
+    return dialog.exec() == QMessageBox.StandardButton.Yes
+
+
+def refresh_widget_style(widget: QWidget) -> None:
+    """Reapply the application stylesheet after changing a widget role."""
+
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+    widget.update()
+
+
+class DeselectableTable(QTableWidget):
+    """Allow a selected row to be cleared by clicking it or empty table space."""
+
+    def mousePressEvent(self, event):
+        item = self.itemAt(event.position().toPoint())
+        if item is None:
+            self.clearSelection()
+            self.setCurrentItem(None)
+            return
+
+        if item.row() == self.currentRow():
+            self.clearSelection()
+            self.setCurrentItem(None)
+            return
+
+        super().mousePressEvent(event)
 
 
 class DashboardTab(QWidget):
@@ -233,7 +309,7 @@ class DashboardTab(QWidget):
 
     @staticmethod
     def _make_table(headers):
-        table = QTableWidget(0, len(headers))
+        table = DeselectableTable(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -355,8 +431,8 @@ class DashboardTab(QWidget):
     def _refresh_status_labels(self):
         registry_state = "Active" if self.registry_active else "Stopped"
         fim_state = "Active" if self.fim_active else "Stopped"
-        self.lbl_registry_status.setText(f"Registry Monitor: {registry_state}")
-        self.lbl_fim_status.setText(f"File Integrity Monitoring: {fim_state}")
+        self._set_status_text(self.lbl_registry_status, "Registry Monitor", registry_state)
+        self._set_status_text(self.lbl_fim_status, "File Integrity Monitoring", fim_state)
         self.btn_baselines.setEnabled(not (self.registry_active or self.fim_active))
         self.btn_toggle.setText(
             "Stop Monitoring" if self.registry_active or self.fim_active else "Start Monitoring"
@@ -380,6 +456,9 @@ class DashboardTab(QWidget):
                 directory.get("status", "Unavailable"),
             ]
             self._set_row(self.fim_table, row, values, [full_path, values[1]])
+            if values[1] == "Active":
+                active_color = "#4ade80" if QApplication.instance().property("darkTheme") else "#16834b"
+                self.fim_table.item(row, 1).setForeground(QColor(active_color))
 
     def _refresh_events_table(self):
         self.events_table.setRowCount(0)
@@ -417,6 +496,16 @@ class DashboardTab(QWidget):
             table.setItem(row, column, item)
 
     @staticmethod
+    def _set_status_text(label, name, state):
+        if state == "Active":
+            app = QApplication.instance()
+            color = "#4ade80" if app and app.property("darkTheme") else "#16834b"
+            label.setText(f'{name}: <span style="color: {color};">Active</span>')
+        else:
+            label.setText(f"{name}: Stopped")
+        label.setTextFormat(Qt.TextFormat.RichText)
+
+    @staticmethod
     def _set_baseline_label(label, timestamp):
         if timestamp:
             label.setText(f"Baseline created: {timestamp}")
@@ -424,6 +513,7 @@ class DashboardTab(QWidget):
         else:
             label.setText("Baseline created: Not created yet.")
             label.setObjectName("secondaryLabel")
+        refresh_widget_style(label)
 
     def _toggle_monitoring(self):
         if self._toggle_callback:
@@ -459,6 +549,4 @@ class DashboardTab(QWidget):
             return "Policies Explorer"
         if "\\services" in normalized:
             return "Services"
-        if "winguardtest" in normalized:
-            return "WinGuardTest"
         return key_path.split("\\")[-1] if key_path else "Unknown"

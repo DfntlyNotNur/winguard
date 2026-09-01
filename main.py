@@ -2,7 +2,7 @@
 import sys
 
 from PyQt6.QtCore import QSettings, Qt
-from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtGui import QCloseEvent, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -17,7 +17,14 @@ from PyQt6.QtWidgets import (
 )
 
 from theme import apply_theme
-from ui.dashboard_ui import DashboardTab, show_no_baselines_warning
+from config import (
+    BASELINE_READY,
+    FIM_FOLDER_ADDED_MESSAGE,
+    FIM_FOLDER_REMOVED_MESSAGE,
+    FIM_MONITORING_PAUSED_MESSAGE,
+    LOGO_FILE,
+)
+from ui.dashboard_ui import DashboardTab, show_monitoring_readiness_warning
 from ui.fim_ui import FileIntegrityTab
 from ui.registry_ui import RegistryTab
 
@@ -26,14 +33,17 @@ class WinGuardMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("WinGuard - Windows Registry & Integrity Monitoring")
-        self.setGeometry(200, 200, 1100, 600)
+        self.resize(1100, 600)
         self.setMinimumSize(900, 500)
+        self._center_window()
         self.settings = QSettings("WinGuard", "WinGuard")
         self.dark_theme = self.settings.value("theme", "dark") == "dark"
         apply_theme(QApplication.instance(), self.dark_theme)
+        self._update_window_icon()
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        self._status_alert = False
         self.status_bar.showMessage("WinGuard ready.")
 
         central = QWidget()
@@ -89,8 +99,10 @@ class WinGuardMainWindow(QMainWindow):
             self.dashboard_tab.set_monitoring_state(False)
             return
 
-        if not self.registry_tab.can_start_monitoring() or not self.fim_tab.can_start_monitoring():
-            show_no_baselines_warning(self)
+        registry_status = self.registry_tab.get_monitoring_readiness()
+        fim_status = self.fim_tab.get_monitoring_readiness()
+        if registry_status != BASELINE_READY or fim_status != BASELINE_READY:
+            show_monitoring_readiness_warning(self, registry_status, fim_status)
             return
 
         registry_started = self.registry_tab.start_monitoring(notify=False)
@@ -125,7 +137,14 @@ class WinGuardMainWindow(QMainWindow):
         self.dark_theme = not self.dark_theme
         self.settings.setValue("theme", "dark" if self.dark_theme else "light")
         apply_theme(QApplication.instance(), self.dark_theme)
+        self._update_window_icon()
         self._update_theme_button()
+        self._refresh_status_bar_style()
+
+    def _update_window_icon(self):
+        icon = QIcon(str(LOGO_FILE)) if LOGO_FILE.is_file() else QIcon()
+        self.setWindowIcon(icon)
+        QApplication.instance().setWindowIcon(icon)
 
     def _update_theme_button(self):
         if self.dark_theme:
@@ -136,7 +155,30 @@ class WinGuardMainWindow(QMainWindow):
             self.theme_button.setToolTip("Switch to dark theme")
 
     def update_status(self, message: str):
+        self._status_alert = message in {
+            FIM_MONITORING_PAUSED_MESSAGE,
+            FIM_FOLDER_ADDED_MESSAGE,
+            FIM_FOLDER_REMOVED_MESSAGE,
+        }
         self.status_bar.showMessage(message)
+        self._refresh_status_bar_style()
+
+    def _refresh_status_bar_style(self):
+        if not self._status_alert:
+            self.status_bar.setStyleSheet("")
+            return
+        color = "#ff6b6b" if self.dark_theme else "#c62828"
+        self.status_bar.setStyleSheet(
+            f"QStatusBar {{ color: {color}; font-weight: 600; }}"
+        )
+
+    def _center_window(self):
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        frame = self.frameGeometry()
+        frame.moveCenter(screen.availableGeometry().center())
+        self.move(frame.topLeft())
 
     def closeEvent(self, event: QCloseEvent):
         self.registry_tab.stop_monitoring()

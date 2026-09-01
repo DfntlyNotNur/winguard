@@ -4,6 +4,9 @@ from pathlib import Path
 
 import winreg
 
+APP_DIRECTORY = Path(__file__).resolve().parent
+LOGO_FILE = APP_DIRECTORY / "wgdt.png"
+
 MONITORED_REGISTRY_KEYS = [
     (winreg.HKEY_CURRENT_USER, "HKCU", r"Software\Microsoft\Windows\CurrentVersion\Run", "HIGH"),
     (winreg.HKEY_LOCAL_MACHINE, "HKLM", r"Software\Microsoft\Windows\CurrentVersion\Run", "HIGH"),
@@ -12,7 +15,6 @@ MONITORED_REGISTRY_KEYS = [
     (winreg.HKEY_LOCAL_MACHINE, "HKLM", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "MEDIUM"),
     (winreg.HKEY_CURRENT_USER, "HKCU", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "MEDIUM"),
     (winreg.HKEY_LOCAL_MACHINE, "HKLM", r"SYSTEM\CurrentControlSet\Services", "HIGH"),
-    (winreg.HKEY_CURRENT_USER, "HKCU", r"Software\WinGuardTest", "TESTING"),
 ]
 
 # Environment-based paths work for any Windows user account.
@@ -23,6 +25,14 @@ MONITORED_DIRECTORIES = [
 
 POLLING_INTERVAL_MS = 5000
 DATE_FORMAT = "%d/%m/%Y %H:%M:%S"
+FIM_MONITORING_PAUSED_MESSAGE = (
+    "Monitoring paused. Create a new FIM baseline before restarting."
+)
+FIM_FOLDER_ADDED_MESSAGE = "Folder added. Create a new FIM baseline before monitoring."
+FIM_FOLDER_REMOVED_MESSAGE = "Folder removed. Create a new FIM baseline before monitoring."
+BASELINE_READY = "READY"
+BASELINE_MISSING = "MISSING"
+BASELINE_OUTDATED = "OUTDATED"
 
 # Runtime data belongs in the user's writable profile, not beside the executable.
 DATA_DIRECTORY = Path(
