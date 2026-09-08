@@ -1,6 +1,6 @@
 PSM: WinGuard - Windows Registry & Integrity Guard Tool
 
-Download: [here]https://github.com/DfntlyNotNur/winguard/releases
+Download: [here](https://github.com/DfntlyNotNur/winguard/releases)
 
 File structure:
 winguard_env/
